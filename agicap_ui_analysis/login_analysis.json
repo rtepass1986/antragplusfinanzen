@@ -1,0 +1,46 @@
+{
+  "title": "Login",
+  "url": "https://myaccount.agicap.com/Account/Login?returnUrl=%2Fconnect%2Fauthorize%2Fcallback%3Fclient_id%3Dagicap_spa_client%26redirect_uri%3Dhttps%253A%252F%252Fapp.agicap.com%252Fde%252Fapp%252Fauth%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%2520profile%2520agicap%253Aapp%2520offline_access%2520roles%26nonce%3D6b0bb1efecb1b37d6222f345eb0293adc54FhsXxY%26state%3D25f34a1d4b1da0a0c9840834c2ee77184cob5uh1A%26code_challenge%3DnFj5lpehZD6Yj4i4fXKWPRmJau--WfFQu7dI7_qiIDI%26code_challenge_method%3DS256%26ui_locales%3Dde-DE",
+  "forms": [
+    {
+      "action": "https://myaccount.agicap.com/Account/Login?returnUrl=%2Fconnect%2Fauthorize%2Fcallback%3Fclient_id%3Dagicap_spa_client%26redirect_uri%3Dhttps%253A%252F%252Fapp.agicap.com%252Fde%252Fapp%252Fauth%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%2520profile%2520agicap%253Aapp%2520offline_access%2520roles%26nonce%3D6b0bb1efecb1b37d6222f345eb0293adc54FhsXxY%26state%3D25f34a1d4b1da0a0c9840834c2ee77184cob5uh1A%26code_challenge%3DnFj5lpehZD6Yj4i4fXKWPRmJau--WfFQu7dI7_qiIDI%26code_challenge_method%3DS256%26ui_locales%3Dde-DE",
+      "method": "post",
+      "id": "",
+      "className": "ng-untouched ng-pristine ng-invalid ng-star-inserted"
+    }
+  ],
+  "emailInputs": [],
+  "passwordInputs": [
+    {
+      "id": "mat-input-1",
+      "name": "Input.Password",
+      "className": "mat-mdc-input-element ng-tns-c508571215-1 mat-mdc-form-field-input-control mdc-text-field__input ng-untouched ng-pristine ng-invalid cdk-text-field-autofill-monitored"
+    }
+  ],
+  "submitButtons": [
+    {
+      "id": "",
+      "className": "mat-icon-button cdk-focused cdk-mouse-focused mdc-icon-button mat-mdc-icon-button mat-unthemed mat-mdc-button-base",
+      "text": "",
+      "type": "button"
+    },
+    {
+      "id": "",
+      "className": "flipper-button flipper-inline-button",
+      "text": "Passwort vergessen?",
+      "type": "button"
+    },
+    {
+      "id": "",
+      "className": "mdc-button mdc-button--raised mat-mdc-raised-button mat-primary mat-mdc-button-base",
+      "text": "Login",
+      "type": "submit"
+    },
+    {
+      "id": "",
+      "className": "flipper-button flipper-inline-button",
+      "text": "Kostenlos registrieren",
+      "type": "submit"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "outputDirectory": ".next",
+  "installCommand": "npm install",
+  "devCommand": "npm run dev",
+  "regions": ["fra1"],
+  "functions": {
+    "src/app/api/invoices/*/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/bank/*/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/projects/*/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/analytics/*/route.ts": {
+      "maxDuration": 30
+    }
+  }
+}

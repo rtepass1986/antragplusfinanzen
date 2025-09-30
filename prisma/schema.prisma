@@ -1,0 +1,912 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ================================
+// USER MANAGEMENT & AUTHENTICATION
+// ================================
+
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  name           String?
+  hashedPassword String?
+  role           UserRole  @default(USER)
+  emailVerified  DateTime?
+  image          String?
+  phone          String?
+  department     String?
+  jobTitle       String?
+  isActive       Boolean   @default(true)
+  lastLoginAt    DateTime?
+  passwordResetToken String?
+  passwordResetExpires DateTime?
+  twoFactorEnabled Boolean @default(false)
+  twoFactorSecret String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // NextAuth relations
+  accounts Account[]
+  sessions Session[]
+
+  // Business relations
+  companies          UserCompany[]
+  createdInvoices    Invoice[]     @relation("CreatedBy")
+  approvedInvoices   Invoice[]     @relation("ApprovedBy")
+  auditLogs          AuditLog[]
+  notifications      Notification[]
+  approvalTasks      ApprovalTask[]
+  delegations        Delegation[]  @relation("DelegatedBy")
+  receivedDelegations Delegation[] @relation("DelegatedTo")
+  userPermissions    UserPermission[]
+  invitations        CompanyInvitation[] @relation("InvitedBy")
+  receivedInvitations CompanyInvitation[] @relation("InvitedUser")
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verificationtokens")
+}
+
+// ================================
+// COMPANY & MULTI-TENANCY
+// ================================
+
+model Company {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  taxId       String?
+  address     String?
+  phone       String?
+  email       String?
+  website     String?
+  settings    Json?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  users              UserCompany[]
+  invoices           Invoice[]
+  expenses           Expense[]
+  bankAccounts       BankAccount[]
+  bankStatements     BankStatement[]
+  businessPartners   BusinessPartner[]
+  approvalWorkflows  ApprovalWorkflow[]
+  cashFlowScenarios  CashFlowScenario[]
+  categories         Category[]
+  projects           Project[]
+  auditLogs          AuditLog[]
+  integrationConfigs IntegrationConfig[]
+  userPermissions    UserPermission[]
+  userRoles          UserRole[]
+  invitations        CompanyInvitation[]
+
+  @@map("companies")
+}
+
+model UserCompany {
+  id        String      @id @default(cuid())
+  userId    String
+  companyId String
+  role      CompanyRole @default(EMPLOYEE)
+  isActive  Boolean     @default(true)
+  joinedAt  DateTime    @default(now())
+  invitedAt DateTime?
+  invitedBy String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, companyId])
+  @@map("user_companies")
+}
+
+// ================================
+// PERMISSIONS & ACCESS CONTROL
+// ================================
+
+model Permission {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  resource    String   // e.g., "invoices", "users", "reports"
+  action      String   // e.g., "create", "read", "update", "delete", "approve"
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  userPermissions UserPermission[]
+  rolePermissions RolePermission[]
+
+  @@unique([resource, action])
+  @@map("permissions")
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  isSystem    Boolean  @default(false) // System roles cannot be deleted
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+
+  @@map("roles")
+}
+
+model UserPermission {
+  id           String     @id @default(cuid())
+  userId       String
+  companyId    String
+  permissionId String
+  granted      Boolean    @default(true)
+  grantedBy    String?
+  grantedAt    DateTime   @default(now())
+  expiresAt    DateTime?
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, companyId, permissionId])
+  @@map("user_permissions")
+}
+
+model RolePermission {
+  id           String     @id @default(cuid())
+  roleId       String
+  permissionId String
+  granted      Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  id        String   @id @default(cuid())
+  userId    String
+  companyId String
+  roleId    String
+  assignedBy String?
+  assignedAt DateTime @default(now())
+  expiresAt  DateTime?
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  role    Role    @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, companyId, roleId])
+  @@map("user_roles")
+}
+
+// ================================
+// COMPANY INVITATIONS
+// ================================
+
+model CompanyInvitation {
+  id        String   @id @default(cuid())
+  companyId String
+  email     String
+  role      CompanyRole
+  token     String   @unique
+  invitedBy String
+  invitedUserId String?
+  status    InvitationStatus @default(PENDING)
+  expiresAt DateTime
+  acceptedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company     Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invitedByUser User  @relation("InvitedBy", fields: [invitedBy], references: [id])
+  invitedUser   User? @relation("InvitedUser", fields: [invitedUserId], references: [id])
+
+  @@unique([companyId, email])
+  @@map("company_invitations")
+}
+
+// ================================
+// INVOICE MANAGEMENT
+// ================================
+
+model Invoice {
+  id             String        @id @default(cuid())
+  invoiceNumber  String
+  filename       String
+  originalFile   String
+  s3Key          String?
+  s3Url          String?
+
+  // Invoice data
+  vendor         String
+  vendorAddress  String?
+  vendorTaxId    String?
+  customerName   String?
+  customerAddress String?
+
+  invoiceDate    DateTime
+  dueDate        DateTime?
+  totalAmount    Decimal       @db.Decimal(10, 2)
+  taxAmount      Decimal?      @db.Decimal(10, 2)
+  subtotal       Decimal?      @db.Decimal(10, 2)
+  currency       String        @default("EUR")
+
+  // Business logic
+  status         InvoiceStatus @default(PROCESSING)
+  category       String?
+  project        String?
+  bankAccount    String?
+  paymentTerms   String?
+  notes          String?
+  tags           String[]
+
+  // OCR & Processing
+  ocrConfidence  Float?
+  ocrRawText     String?
+  extractedFields Json?
+
+  // Workflow
+  approvalStatus ApprovalStatus @default(PENDING)
+  priority       Priority      @default(NORMAL)
+
+  // Timestamps
+  processedAt    DateTime      @default(now())
+  reviewedAt     DateTime?
+  approvedAt     DateTime?
+  paidAt         DateTime?
+  archivedAt     DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  // Relations
+  companyId      String
+  createdById    String
+  approvedById   String?
+
+  company        Company       @relation(fields: [companyId], references: [id])
+  createdBy      User          @relation("CreatedBy", fields: [createdById], references: [id])
+  approvedBy     User?         @relation("ApprovedBy", fields: [approvedById], references: [id])
+
+  lineItems      LineItem[]
+  attachments    Attachment[]
+  approvalTasks  ApprovalTask[]
+  duplicates     DuplicateCheck[]
+
+  @@unique([companyId, invoiceNumber])
+  @@map("invoices")
+}
+
+model LineItem {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  description String
+  quantity    Decimal @db.Decimal(10, 3)
+  unitPrice   Decimal @db.Decimal(10, 2)
+  totalPrice  Decimal @db.Decimal(10, 2)
+  category    String?
+  project     String?
+  taxRate     Decimal? @db.Decimal(5, 2)
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("line_items")
+}
+
+model Attachment {
+  id        String   @id @default(cuid())
+  invoiceId String
+  filename  String
+  s3Key     String
+  s3Url     String
+  fileSize  Int
+  mimeType  String
+  createdAt DateTime @default(now())
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("attachments")
+}
+
+// ================================
+// APPROVAL WORKFLOWS
+// ================================
+
+model ApprovalWorkflow {
+  id          String   @id @default(cuid())
+  companyId   String
+  name        String
+  description String?
+  conditions  Json     // Rules for when this workflow applies
+  steps       Json     // Workflow steps configuration
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company Company        @relation(fields: [companyId], references: [id])
+  tasks   ApprovalTask[]
+
+  @@map("approval_workflows")
+}
+
+model ApprovalTask {
+  id         String           @id @default(cuid())
+  invoiceId  String
+  workflowId String
+  userId     String
+  step       Int
+  status     ApprovalStatus   @default(PENDING)
+  priority   Priority         @default(NORMAL)
+  dueDate    DateTime?
+  comments   String?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  invoice  Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  workflow ApprovalWorkflow @relation(fields: [workflowId], references: [id])
+  user     User             @relation(fields: [userId], references: [id])
+
+  @@map("approval_tasks")
+}
+
+model Delegation {
+  id           String    @id @default(cuid())
+  delegatedBy  String
+  delegatedTo  String
+  startDate    DateTime
+  endDate      DateTime
+  isActive     Boolean   @default(true)
+  reason       String?
+  createdAt    DateTime  @default(now())
+
+  delegator User @relation("DelegatedBy", fields: [delegatedBy], references: [id])
+  delegate  User @relation("DelegatedTo", fields: [delegatedTo], references: [id])
+
+  @@map("delegations")
+}
+
+// ================================
+// EXPENSE MANAGEMENT
+// ================================
+
+model Expense {
+  id          String        @id @default(cuid())
+  companyId   String
+  title       String
+  description String?
+  amount      Decimal       @db.Decimal(10, 2)
+  currency    String        @default("EUR")
+  category    String
+  project     String?
+  date        DateTime
+  status      ExpenseStatus @default(DRAFT)
+  receiptUrl  String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@map("expenses")
+}
+
+// ================================
+// CASH FLOW MANAGEMENT
+// ================================
+
+model CashFlowScenario {
+  id          String   @id @default(cuid())
+  companyId   String
+  name        String
+  description String?
+  type        ScenarioType @default(CUSTOM)
+  riskLevel   RiskLevel    @default(MEDIUM)
+  isActive    Boolean      @default(false)
+  assumptions Json
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  company   Company            @relation(fields: [companyId], references: [id])
+  forecasts CashFlowForecast[]
+
+  @@map("cash_flow_scenarios")
+}
+
+model CashFlowForecast {
+  id         String   @id @default(cuid())
+  scenarioId String
+  month      DateTime
+  income     Decimal  @db.Decimal(12, 2)
+  expenses   Decimal  @db.Decimal(12, 2)
+  net        Decimal  @db.Decimal(12, 2)
+  confidence Float?
+  createdAt  DateTime @default(now())
+
+  scenario CashFlowScenario @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+
+  @@unique([scenarioId, month])
+  @@map("cash_flow_forecasts")
+}
+
+// ================================
+// BANKING & PAYMENTS
+// ================================
+
+model BankAccount {
+  id          String   @id @default(cuid())
+  companyId   String
+  name        String
+  iban        String
+  bic         String?
+  bankName    String
+  accountType String   @default("BUSINESS")
+  balance     Decimal? @db.Decimal(12, 2)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company       Company         @relation(fields: [companyId], references: [id])
+  transactions  Transaction[]
+  statements    BankStatement[]
+
+  @@unique([companyId, iban])
+  @@map("bank_accounts")
+}
+
+model Transaction {
+  id            String          @id @default(cuid())
+  bankAccountId String
+  amount        Decimal         @db.Decimal(12, 2)
+  currency      String          @default("EUR")
+  description   String
+  reference     String?
+  type          TransactionType
+  status        String          @default("COMPLETED")
+  date          DateTime
+  valueDate     DateTime?
+
+  // AI Processing Fields
+  counterparty  String?         // Cleaned counterparty name
+  category      String?         // AI-suggested category
+  subcategory   String?         // AI-suggested subcategory
+  confidence    Float?          // AI confidence score
+  isDuplicate   Boolean         @default(false)
+  duplicateOf   String?         // ID of original transaction if duplicate
+  anomalyType   String?         // Type of anomaly detected
+  anomalySeverity String?       // Severity of anomaly (low, medium, high)
+  aiProcessed   Boolean         @default(false)
+  aiProcessedAt DateTime?
+
+  // Statement Import Fields
+  statementId   String?         // Reference to statement import
+  originalDescription String?   // Original description before AI processing
+
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  bankAccount BankAccount @relation(fields: [bankAccountId], references: [id])
+
+  @@map("transactions")
+}
+
+model BankStatement {
+  id              String   @id @default(cuid())
+  companyId       String
+  bankAccountId   String
+  filename        String
+  originalFile    String
+  s3Key           String?
+  s3Url           String?
+
+  // Statement metadata
+  accountNumber   String?
+  accountHolder   String?
+  bankName        String?
+  statementPeriod Json     // { startDate, endDate }
+  openingBalance  Decimal  @db.Decimal(12, 2)
+  closingBalance  Decimal  @db.Decimal(12, 2)
+  currency        String   @default("EUR")
+
+  // Processing status
+  status          StatementStatus @default(PROCESSING)
+  transactionCount Int            @default(0)
+  processedCount   Int            @default(0)
+  aiConfidence     Float?
+
+  // AI Analysis results
+  aiAnalysis      Json?           // Full AI analysis results
+  summary         Json?           // Statement summary
+
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  processedAt     DateTime?
+
+  company     Company       @relation(fields: [companyId], references: [id])
+  bankAccount BankAccount   @relation(fields: [bankAccountId], references: [id])
+
+  @@map("bank_statements")
+}
+
+// ================================
+// BUSINESS PARTNERS & CATEGORIES
+// ================================
+
+model BusinessPartner {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String
+  type      PartnerType
+  email     String?
+  phone     String?
+  address   String?
+  taxId     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, name, type])
+  @@map("business_partners")
+}
+
+model Category {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String
+  type      CategoryType
+  color     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, name, type])
+  @@map("categories")
+}
+
+model Project {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String
+  code      String?
+  description String?
+  status    ProjectStatus @default(ACTIVE)
+  startDate DateTime?
+  endDate   DateTime?
+  budget    Decimal?      @db.Decimal(12, 2)
+
+  // Financial Framework
+  totalBudget     Decimal? @db.Decimal(12, 2)
+  spentAmount     Decimal? @db.Decimal(12, 2) @default(0)
+  remainingBudget Decimal? @db.Decimal(12, 2)
+  currency        String   @default("EUR")
+
+  // Grant Giver Information
+  grantGiverName    String?
+  grantGiverContact String?
+  grantGiverEmail   String?
+  grantGiverPhone   String?
+  grantGiverAddress String?
+  grantReference    String?
+  grantAgreementUrl String?
+
+  // Reporting Framework
+  reportingFrequency ReportingFrequency @default(MONTHLY)
+  nextReportDue      DateTime?
+  lastReportSent     DateTime?
+  reportingTemplate  String?
+  reportingEmail     String?
+  autoReporting      Boolean @default(false)
+
+  // Project Management
+  projectManager   String?
+  teamMembers      String[] // Array of user IDs or names
+  milestones       Json?    // Project milestones and deadlines
+  deliverables     Json?    // Project deliverables
+  risks            Json?    // Risk assessment and mitigation
+
+  // Financial Tracking
+  categories       String[] // Allowed expense categories for this project
+  budgetBreakdown  Json?    // Budget allocation by category
+
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, name])
+  @@map("projects")
+}
+
+// ================================
+// INTEGRATIONS & EXPORTS
+// ================================
+
+model IntegrationConfig {
+  id        String         @id @default(cuid())
+  companyId String
+  type      IntegrationType
+  name      String
+  config    Json           // Integration-specific configuration
+  isActive  Boolean        @default(true)
+  lastSync  DateTime?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, type, name])
+  @@map("integration_configs")
+}
+
+model ExportLog {
+  id        String     @id @default(cuid())
+  companyId String
+  type      ExportType
+  status    ExportStatus @default(PENDING)
+  filename  String?
+  s3Key     String?
+  parameters Json?
+  error     String?
+  createdAt DateTime   @default(now())
+  completedAt DateTime?
+
+  @@map("export_logs")
+}
+
+// ================================
+// DUPLICATE DETECTION
+// ================================
+
+model DuplicateCheck {
+  id          String   @id @default(cuid())
+  invoiceId   String
+  similarTo   String[] // Array of invoice IDs
+  similarity  Float    // Similarity score 0-1
+  status      DuplicateStatus @default(PENDING)
+  reviewedAt  DateTime?
+  createdAt   DateTime @default(now())
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("duplicate_checks")
+}
+
+// ================================
+// AUDIT LOGS & NOTIFICATIONS
+// ================================
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  companyId String
+  userId    String
+  action    String
+  entity    String   // e.g., "Invoice", "User", "Company"
+  entityId  String
+  oldValue  Json?
+  newValue  Json?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  data      Json?
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+// ================================
+// ENUMS
+// ================================
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  USER
+}
+
+enum CompanyRole {
+  OWNER
+  ADMIN
+  ACCOUNTANT
+  APPROVER
+  EMPLOYEE
+  VIEWER
+}
+
+enum InvoiceStatus {
+  PROCESSING
+  REVIEWED
+  APPROVED
+  PAID
+  ARCHIVED
+  REJECTED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  DELEGATED
+}
+
+enum ExpenseStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  PAID
+}
+
+enum Priority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum ScenarioType {
+  MAIN
+  OPTIMISTIC
+  PESSIMISTIC
+  CUSTOM
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+}
+
+enum PartnerType {
+  CUSTOMER
+  VENDOR
+  BOTH
+}
+
+enum CategoryType {
+  INCOME
+  EXPENSE
+}
+
+enum ProjectStatus {
+  ACTIVE
+  COMPLETED
+  ON_HOLD
+  CANCELLED
+}
+
+enum ReportingFrequency {
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  BIANNUALLY
+  ANNUALLY
+  CUSTOM
+}
+
+enum IntegrationType {
+  DATEV
+  SAP
+  SAGE
+  BANK_API
+  EMAIL
+}
+
+enum ExportType {
+  DATEV
+  CSV
+  PDF
+  XML
+}
+
+enum ExportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum DuplicateStatus {
+  PENDING
+  CONFIRMED_DUPLICATE
+  NOT_DUPLICATE
+}
+
+enum NotificationType {
+  INVOICE_APPROVAL
+  PAYMENT_DUE
+  DUPLICATE_DETECTED
+  WORKFLOW_ASSIGNED
+  SYSTEM_UPDATE
+}
+
+enum StatementStatus {
+  PROCESSING
+  PROCESSED
+  REVIEWED
+  IMPORTED
+  FAILED
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  CANCELLED
+}

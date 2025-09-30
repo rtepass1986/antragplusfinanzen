@@ -1,0 +1,100 @@
+[
+  {
+    "name": "Liquidity Planning",
+    "description": "Test all liquidity planning and cash flow features",
+    "page": "Liquidity Dashboard",
+    "actions": [
+      {
+        "type": "select",
+        "selector": "select[name*=\"scenario\"], select[class*=\"scenario\"]",
+        "value": "optimistic",
+        "description": "Switch to optimistic scenario",
+        "result": "failed"
+      },
+      {
+        "type": "select",
+        "selector": "select[name*=\"scenario\"], select[class*=\"scenario\"]",
+        "value": "realistic",
+        "description": "Switch to realistic scenario",
+        "result": "failed"
+      },
+      {
+        "type": "select",
+        "selector": "select[name*=\"scenario\"], select[class*=\"scenario\"]",
+        "value": "pessimistic",
+        "description": "Switch to pessimistic scenario",
+        "result": "failed"
+      }
+    ],
+    "results": {},
+    "status": "success",
+    "timestamp": "2025-09-30T10:36:34+02:00"
+  },
+  {
+    "name": "Cash Flow Forecasting",
+    "description": "Test AI-powered cash flow forecasting features",
+    "page": "Cash Flow Dashboard",
+    "actions": [
+      {
+        "type": "select",
+        "selector": "select[name*=\"timeframe\"], select[class*=\"timeframe\"]",
+        "value": "6",
+        "description": "Set timeframe to 6 months",
+        "result": "failed"
+      },
+      {
+        "type": "select",
+        "selector": "select[name*=\"timeframe\"], select[class*=\"timeframe\"]",
+        "value": "12",
+        "description": "Set timeframe to 12 months",
+        "result": "failed"
+      },
+      {
+        "type": "select",
+        "selector": "select[name*=\"timeframe\"], select[class*=\"timeframe\"]",
+        "value": "24",
+        "description": "Set timeframe to 24 months",
+        "result": "failed"
+      }
+    ],
+    "results": {},
+    "status": "success",
+    "timestamp": "2025-09-30T10:36:34+02:00"
+  },
+  {
+    "name": "Banking Integration",
+    "description": "Test bank account management and integration features",
+    "page": "Banking Dashboard",
+    "actions": [],
+    "results": {},
+    "status": "success",
+    "timestamp": "2025-09-30T10:36:34+02:00"
+  },
+  {
+    "name": "Settings \u0026 Configuration",
+    "description": "Test application settings and configuration options",
+    "page": "Settings",
+    "actions": [],
+    "results": {},
+    "status": "success",
+    "timestamp": "2025-09-30T10:36:34+02:00"
+  },
+  {
+    "name": "Export \u0026 Reporting",
+    "description": "Test data export and reporting features",
+    "page": "Export Dashboard",
+    "actions": [],
+    "results": {},
+    "status": "success",
+    "timestamp": "2025-09-30T10:36:34+02:00"
+  },
+  {
+    "name": "Advanced Reporting",
+    "description": "Test advanced reporting and analytics features",
+    "page": "Reports Dashboard",
+    "actions": [],
+    "results": {},
+    "status": "success",
+    "timestamp": "2025-09-30T10:36:34+02:00"
+  }
+]

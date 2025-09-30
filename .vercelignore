@@ -1,0 +1,38 @@
+# Files to ignore during Vercel deployment
+
+# Local environment files
+.env.local
+.env.local.backup
+.env.test
+
+# Development files
+*.go
+viper_explorer.go
+explorer.go
+functional_explorer.go
+simple_explorer.go
+main.go
+go.mod
+go.sum
+
+# Documentation and analysis
+agicap_ui_analysis/
+*.md
+!README.md
+
+# Test files
+tests/
+jest.config.js
+jest.setup.js
+
+# Scripts (except necessary ones)
+scripts/test-aws-setup.js
+
+# Config files
+config.yaml
+fintech-saas.code-workspace
+.DS_Store
+
+# Build artifacts
+tsconfig.tsbuildinfo
+test-invoice.txt

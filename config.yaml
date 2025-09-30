@@ -1,0 +1,37 @@
+# Agicap Explorer Configuration
+explorer:
+  # Target website
+  login_url: 'https://app.agicap.com/de/app/cashflow/forecast'
+
+  # Credentials
+  credentials:
+    email: 'finance@visioneers.io'
+    password: 'Gottistimmergut2025!'
+
+  # Browser settings
+  browser:
+    headless: true
+    window_size: '1920,1080'
+    user_agent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    timeout_minutes: 15
+
+  # Exploration settings
+  exploration:
+    max_pages: 15
+    delay_between_pages: 2
+    delay_between_interactions: 1
+
+  # Output settings
+  output:
+    directory: './agicap_ui_analysis'
+    create_directories:
+      - 'screenshots'
+      - 'html'
+      - 'components'
+      - 'reports'
+
+  # Error handling
+  error_handling:
+    ignore_cdp_errors: true
+    retry_attempts: 3
+    retry_delay: 2

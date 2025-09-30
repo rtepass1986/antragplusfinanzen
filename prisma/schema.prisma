@@ -48,6 +48,7 @@ model User {
   delegations        Delegation[]  @relation("DelegatedBy")
   receivedDelegations Delegation[] @relation("DelegatedTo")
   userPermissions    UserPermission[]
+  userRoles          UserRole[]
   invitations        CompanyInvitation[] @relation("InvitedBy")
   receivedInvitations CompanyInvitation[] @relation("InvitedUser")
 

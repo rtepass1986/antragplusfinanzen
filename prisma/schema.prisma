@@ -507,7 +507,7 @@ model BankAccount {
 }
 
 model Transaction {
-  id            String          @id @default(cuid())
+  id            String          @id
   bankAccountId String
   amount        Decimal         @db.Decimal(12, 2)
   currency      String          @default("EUR")
@@ -517,6 +517,7 @@ model Transaction {
   status        String          @default("COMPLETED")
   date          DateTime
   valueDate     DateTime?
+  balance       Decimal?        @db.Decimal(12, 2) // Balance after transaction
 
   // AI Processing Fields
   counterparty  String?         // Cleaned counterparty name
@@ -533,6 +534,7 @@ model Transaction {
   // Statement Import Fields
   statementId   String?         // Reference to statement import
   originalDescription String?   // Original description before AI processing
+  metadata      Json?           // Additional metadata (raw description, AI reasoning, etc.)
 
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt

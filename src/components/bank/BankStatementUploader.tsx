@@ -8,6 +8,9 @@ import {
 import { useState } from 'react';
 
 interface BankStatementUploaderProps {
+  companyId?: string;
+  bankAccountId?: string;
+  saveToDatabase?: boolean;
   onStatementProcessed: (
     statementData: BankStatementData,
     analysis: AIAnalysisResult
@@ -16,6 +19,9 @@ interface BankStatementUploaderProps {
 }
 
 export default function BankStatementUploader({
+  companyId,
+  bankAccountId,
+  saveToDatabase = false,
   onStatementProcessed,
   onError,
 }: BankStatementUploaderProps) {
@@ -23,6 +29,7 @@ export default function BankStatementUploader({
   const [uploadProgress, setUploadProgress] = useState(0);
   const [dragActive, setDragActive] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [processingStage, setProcessingStage] = useState<string>('');
 
   const processFile = async (file: File) => {
     setIsProcessing(true);
@@ -51,17 +58,28 @@ export default function BankStatementUploader({
         );
       }
 
-      setUploadProgress(20);
+      setUploadProgress(10);
+      setProcessingStage('Uploading file...');
 
       let statementData: BankStatementData;
       let analysis: AIAnalysisResult;
 
       if (file.type === 'application/pdf') {
-        // Process PDF via API endpoint (uses AWS Textract)
-        setUploadProgress(30);
+        // Process PDF via API endpoint (uses AWS Textract + AI)
+        setProcessingStage('Extracting text with AWS Textract...');
+        setUploadProgress(20);
 
         const formData = new FormData();
         formData.append('file', file);
+        if (companyId) {
+          formData.append('companyId', companyId);
+        }
+        if (bankAccountId) {
+          formData.append('bankAccountId', bankAccountId);
+        }
+        if (saveToDatabase) {
+          formData.append('saveToDatabase', 'true');
+        }
 
         const response = await fetch('/api/bank/process-statement', {
           method: 'POST',
@@ -78,34 +96,61 @@ export default function BankStatementUploader({
         analysis = result.analysis;
 
         setUploadProgress(100);
+        setProcessingStage('Processing complete!');
       } else if (file.type === 'text/csv') {
         // Process CSV file
+        setProcessingStage('Parsing CSV file...');
         const csvContent = await file.text();
         statementData = bankStatementAnalyzer.parseCSVStatement(csvContent);
 
-        setUploadProgress(60);
+        setUploadProgress(40);
+        setProcessingStage('Analyzing with AI...');
 
         // Analyze the statement with AI
-        analysis =
-          await bankStatementAnalyzer.analyzeBankStatement(statementData);
+        analysis = await bankStatementAnalyzer.analyzeBankStatement(
+          statementData,
+          companyId
+        );
+
+        setUploadProgress(70);
+
+        // Save to database if requested
+        if (saveToDatabase && companyId) {
+          setProcessingStage('Saving to database...');
+          await saveViaAPI(file);
+        }
 
         setUploadProgress(100);
+        setProcessingStage('Processing complete!');
       } else if (
         file.type === 'application/vnd.ms-excel' ||
         file.type ===
           'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
       ) {
         // Process Excel file
+        setProcessingStage('Parsing Excel file...');
         const excelBuffer = Buffer.from(await file.arrayBuffer());
         statementData = bankStatementAnalyzer.parseXLSStatement(excelBuffer);
 
-        setUploadProgress(60);
+        setUploadProgress(40);
+        setProcessingStage('Analyzing with AI...');
 
         // Analyze the statement with AI
-        analysis =
-          await bankStatementAnalyzer.analyzeBankStatement(statementData);
+        analysis = await bankStatementAnalyzer.analyzeBankStatement(
+          statementData,
+          companyId
+        );
+
+        setUploadProgress(70);
+
+        // Save to database if requested
+        if (saveToDatabase && companyId) {
+          setProcessingStage('Saving to database...');
+          await saveViaAPI(file);
+        }
 
         setUploadProgress(100);
+        setProcessingStage('Processing complete!');
       } else {
         throw new Error(
           'Unsupported file type. Please upload CSV, XLS, XLSX, or PDF files.'
@@ -120,10 +165,34 @@ export default function BankStatementUploader({
           ? err.message
           : 'An error occurred during processing';
       onError(errorMessage);
+      console.error('Bank statement processing error:', err);
     } finally {
       setIsProcessing(false);
       setUploadProgress(0);
       setSelectedFile(null);
+      setProcessingStage('');
+    }
+  };
+
+  const saveViaAPI = async (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (companyId) {
+      formData.append('companyId', companyId);
+    }
+    if (bankAccountId) {
+      formData.append('bankAccountId', bankAccountId);
+    }
+    formData.append('saveToDatabase', 'true');
+
+    const response = await fetch('/api/bank/process-statement', {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to save to database');
     }
   };
 
@@ -203,6 +272,9 @@ export default function BankStatementUploader({
                 Processing Bank Statement
               </p>
               <p className="text-sm text-gray-600 mt-1">{selectedFile?.name}</p>
+              {processingStage && (
+                <p className="text-xs text-blue-600 mt-2">{processingStage}</p>
+              )}
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2">
               <div
@@ -240,20 +312,76 @@ export default function BankStatementUploader({
         )}
       </div>
 
-      {/* Instructions */}
-      <div className="mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
-        <h3 className="text-sm font-medium text-blue-900 mb-2">
-          How to prepare your bank statement:
+      {/* Features List */}
+      <div className="mt-6 bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-4">
+        <h3 className="text-sm font-semibold text-blue-900 mb-3">
+          🤖 AI-Powered Features:
         </h3>
-        <ul className="text-xs text-blue-800 space-y-1">
-          <li>• Export your bank statement as CSV or Excel format</li>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div className="flex items-start space-x-2">
+            <span className="text-green-600 font-bold">✓</span>
+            <span className="text-xs text-blue-800">
+              Bank format detection (Deutsche Bank, Sparkasse, N26, etc.)
+            </span>
+          </div>
+          <div className="flex items-start space-x-2">
+            <span className="text-green-600 font-bold">✓</span>
+            <span className="text-xs text-blue-800">
+              Automatic currency detection
+            </span>
+          </div>
+          <div className="flex items-start space-x-2">
+            <span className="text-green-600 font-bold">✓</span>
+            <span className="text-xs text-blue-800">
+              Smart counterparty extraction
+            </span>
+          </div>
+          <div className="flex items-start space-x-2">
+            <span className="text-green-600 font-bold">✓</span>
+            <span className="text-xs text-blue-800">
+              Transaction categorization
+            </span>
+          </div>
+          <div className="flex items-start space-x-2">
+            <span className="text-green-600 font-bold">✓</span>
+            <span className="text-xs text-blue-800">Duplicate detection</span>
+          </div>
+          <div className="flex items-start space-x-2">
+            <span className="text-green-600 font-bold">✓</span>
+            <span className="text-xs text-blue-800">Anomaly detection</span>
+          </div>
+          <div className="flex items-start space-x-2">
+            <span className="text-green-600 font-bold">✓</span>
+            <span className="text-xs text-blue-800">
+              Invoice reconciliation
+            </span>
+          </div>
+          <div className="flex items-start space-x-2">
+            <span className="text-green-600 font-bold">✓</span>
+            <span className="text-xs text-blue-800">
+              Multi-page PDF support
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Instructions */}
+      <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-4">
+        <h3 className="text-sm font-medium text-amber-900 mb-2">
+          📋 How to prepare your bank statement:
+        </h3>
+        <ul className="text-xs text-amber-800 space-y-1">
+          <li>• Export your bank statement as CSV, Excel, or PDF format</li>
           <li>
-            • Ensure the file contains columns for: Date, Description, Amount,
-            Balance
+            • For CSV/Excel: Ensure columns include Date, Description, Amount
           </li>
-          <li>• Remove any headers or footers that aren't transaction data</li>
           <li>
-            • Make sure amounts are in a consistent format (e.g., 1234.56)
+            • For PDF: Any standard bank statement format (AI will extract
+            everything)
+          </li>
+          <li>
+            • Supported banks: Deutsche Bank, Sparkasse, N26, Commerzbank, ING,
+            and more
           </li>
         </ul>
       </div>

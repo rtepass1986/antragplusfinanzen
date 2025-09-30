@@ -1,3 +1,4 @@
+import { prisma } from '@/lib/prisma';
 import * as XLSX from 'xlsx';
 
 export interface BankTransaction {
@@ -13,12 +14,16 @@ export interface BankTransaction {
   reference?: string;
   balance?: number;
   confidence: number;
+  rawDescription?: string;
+  iban?: string;
 }
 
 export interface BankStatementData {
   accountNumber?: string;
   accountHolder?: string;
   bankName?: string;
+  iban?: string;
+  bic?: string;
   statementPeriod: {
     startDate: string;
     endDate: string;
@@ -28,6 +33,11 @@ export interface BankStatementData {
   transactions: BankTransaction[];
   currency: string;
   confidence: number;
+  metadata?: {
+    detectedFormat?: string;
+    pageCount?: number;
+    processingMethod?: 'csv' | 'excel' | 'pdf' | 'ai';
+  };
 }
 
 export interface AIAnalysisResult {
@@ -60,6 +70,13 @@ export interface AIAnalysisResult {
     suggestedCounterparty: string;
     confidence: number;
   }>;
+  reconciliation: Array<{
+    transactionId: string;
+    matchedInvoiceId?: string;
+    matchedExpenseId?: string;
+    matchType: 'exact' | 'fuzzy' | 'none';
+    confidence: number;
+  }>;
   summary: {
     totalIncome: number;
     totalExpenses: number;
@@ -70,9 +87,94 @@ export interface AIAnalysisResult {
   };
 }
 
+// Bank format templates for better parsing
+interface BankFormat {
+  name: string;
+  identifiers: string[];
+  dateFormat: string;
+  amountFormat: 'comma' | 'dot';
+  columnHints: {
+    date: string[];
+    description: string[];
+    amount: string[];
+    balance: string[];
+    reference: string[];
+  };
+}
+
+const BANK_FORMATS: BankFormat[] = [
+  {
+    name: 'Deutsche Bank',
+    identifiers: ['Deutsche Bank', 'DEUTSCHE BANK AG'],
+    dateFormat: 'DD.MM.YYYY',
+    amountFormat: 'comma',
+    columnHints: {
+      date: ['Buchungstag', 'Valuta', 'Datum'],
+      description: ['Buchungstext', 'Verwendungszweck', 'Text'],
+      amount: ['Betrag', 'Umsatz'],
+      balance: ['Saldo', 'Kontostand'],
+      reference: ['Auftraggeber', 'Empfänger'],
+    },
+  },
+  {
+    name: 'Sparkasse',
+    identifiers: ['Sparkasse', 'SPARKASSE'],
+    dateFormat: 'DD.MM.YYYY',
+    amountFormat: 'comma',
+    columnHints: {
+      date: ['Buchungstag', 'Wertstellung'],
+      description: ['Verwendungszweck', 'Buchungstext'],
+      amount: ['Betrag', 'Umsatz'],
+      balance: ['Saldo'],
+      reference: ['Auftraggeber/Empfänger'],
+    },
+  },
+  {
+    name: 'N26',
+    identifiers: ['N26', 'Number26'],
+    dateFormat: 'YYYY-MM-DD',
+    amountFormat: 'dot',
+    columnHints: {
+      date: ['Date', 'Datum'],
+      description: ['Payee', 'Description', 'Verwendungszweck'],
+      amount: ['Amount', 'Betrag'],
+      balance: ['Balance', 'Saldo'],
+      reference: ['Payment Reference'],
+    },
+  },
+  {
+    name: 'Commerzbank',
+    identifiers: ['Commerzbank', 'COMMERZBANK'],
+    dateFormat: 'DD.MM.YYYY',
+    amountFormat: 'comma',
+    columnHints: {
+      date: ['Buchungstag', 'Wertstellung'],
+      description: ['Buchungstext', 'Verwendungszweck'],
+      amount: ['Betrag', 'Umsatz'],
+      balance: ['Saldo'],
+      reference: ['Auftraggeber', 'Zahlungsempfänger'],
+    },
+  },
+  {
+    name: 'ING',
+    identifiers: ['ING-DiBa', 'ING'],
+    dateFormat: 'DD.MM.YYYY',
+    amountFormat: 'comma',
+    columnHints: {
+      date: ['Buchung', 'Valuta'],
+      description: ['Verwendungszweck', 'Buchungstext'],
+      amount: ['Betrag', 'Umsatz'],
+      balance: ['Saldo'],
+      reference: ['Auftraggeber/Empfänger'],
+    },
+  },
+];
+
 export class BankStatementAnalyzer {
   private apiKey: string | null = null;
   private baseUrl: string = 'https://api.openai.com/v1';
+  private maxRetries: number = 3;
+  private s3KeysToCleanup: string[] = [];
 
   constructor() {
     // Lazy initialization - only check at runtime, not at module load
@@ -90,19 +192,89 @@ export class BankStatementAnalyzer {
     return this.apiKey;
   }
 
-  // Parse PDF bank statement using AWS Textract
+  // Detect bank format from text
+  private detectBankFormat(text: string): BankFormat | null {
+    for (const format of BANK_FORMATS) {
+      for (const identifier of format.identifiers) {
+        if (text.includes(identifier)) {
+          console.log(`Detected bank format: ${format.name}`);
+          return format;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Extract currency from text
+  private detectCurrency(text: string): string {
+    const currencyPatterns = [
+      { pattern: /\bEUR\b|€/i, currency: 'EUR' },
+      { pattern: /\bUSD\b|\$/i, currency: 'USD' },
+      { pattern: /\bGBP\b|£/i, currency: 'GBP' },
+      { pattern: /\bCHF\b/i, currency: 'CHF' },
+    ];
+
+    for (const { pattern, currency } of currencyPatterns) {
+      if (pattern.test(text)) {
+        return currency;
+      }
+    }
+
+    return 'EUR'; // Default fallback
+  }
+
+  // Extract counterparty from description
+  private extractCounterparty(description: string): string {
+    if (!description) return '';
+
+    let cleaned = description;
+
+    // Remove common prefixes
+    cleaned = cleaned.replace(
+      /^(SEPA|SEPA-ÜBERWEISUNG|LASTSCHRIFT|KARTENZAHLUNG|VISA|MASTERCARD|PAYPAL|STRIPE|DIRECT DEBIT|STANDING ORDER|TRANSFER)\s*/i,
+      ''
+    );
+
+    // Remove transaction IDs and reference numbers (10+ digits)
+    cleaned = cleaned.replace(/\b\d{10,}\b/g, '');
+
+    // Remove IBANs
+    cleaned = cleaned.replace(/\b[A-Z]{2}\d{2}[A-Z0-9]+\b/g, '');
+
+    // Remove BICs
+    cleaned = cleaned.replace(/\b[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?\b/g, '');
+
+    // Remove common German banking terms
+    cleaned = cleaned.replace(
+      /\b(VERWENDUNGSZWECK|AUFTRAGGEBER|EMPFÄNGER|REFERENZ|MANDATSREF|KUNDENREF|END-TO-END-REF)\b/gi,
+      ''
+    );
+
+    // Remove multiple spaces
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+    // Take first significant part (before double space or special chars)
+    const parts = cleaned.split(/\s{2,}|\//);
+    cleaned = parts[0] || cleaned;
+
+    return cleaned.substring(0, 100); // Max length
+  }
+
+  // Parse PDF bank statement using AWS Textract + AI
   async parsePDFStatement(
     fileBuffer: Buffer,
     filename: string = 'statement.pdf'
   ): Promise<BankStatementData> {
+    let s3Key: string | undefined;
+
     try {
       console.log('Bank PDF processing: Using AWS Textract for OCR...');
 
       // Use AWS Textract to extract text from PDF
-      const extractedText = await this.extractTextWithTextract(
-        fileBuffer,
-        filename
-      );
+      const { extractedText, s3Key: uploadedKey } =
+        await this.extractTextWithTextract(fileBuffer, filename);
+
+      s3Key = uploadedKey;
 
       if (!extractedText || extractedText.trim().length === 0) {
         throw new Error('Failed to extract text from bank statement PDF');
@@ -112,29 +284,35 @@ export class BankStatementAnalyzer {
         `Extracted ${extractedText.length} characters from bank statement PDF`
       );
 
-      // Parse the extracted text to find transactions
-      const transactions = this.parseTextForTransactions(extractedText);
+      // Detect bank format and currency
+      const detectedFormat = this.detectBankFormat(extractedText);
+      const currency = this.detectCurrency(extractedText);
 
-      if (transactions.length === 0) {
-        throw new Error('No transactions found in bank statement');
-      }
+      // Use AI to parse the extracted text instead of regex
+      const statementData = await this.parseTextWithAI(
+        extractedText,
+        currency,
+        detectedFormat?.name
+      );
 
-      return {
-        statementPeriod: {
-          startDate:
-            transactions[0]?.date || new Date().toISOString().split('T')[0],
-          endDate:
-            transactions[transactions.length - 1]?.date ||
-            new Date().toISOString().split('T')[0],
-        },
-        openingBalance: transactions[0]?.balance || 0,
-        closingBalance: transactions[transactions.length - 1]?.balance || 0,
-        transactions,
-        currency: 'EUR',
-        confidence: 0.9,
+      // Add metadata
+      statementData.metadata = {
+        detectedFormat: detectedFormat?.name,
+        processingMethod: 'pdf',
       };
+
+      // Clean up S3 file after successful processing
+      await this.cleanupS3Files([s3Key]);
+
+      return statementData;
     } catch (error) {
       console.error('Error parsing bank statement PDF:', error);
+
+      // Clean up S3 file on error
+      if (s3Key) {
+        await this.cleanupS3Files([s3Key]);
+      }
+
       throw error;
     }
   }
@@ -142,7 +320,9 @@ export class BankStatementAnalyzer {
   private async extractTextWithTextract(
     fileBuffer: Buffer,
     filename: string = 'statement.pdf'
-  ): Promise<string> {
+  ): Promise<{ extractedText: string; s3Key: string }> {
+    let s3Key: string = '';
+
     try {
       // Import AWS SDK dynamically
       const {
@@ -161,7 +341,7 @@ export class BankStatementAnalyzer {
         },
       });
 
-      const s3Key = `bank-statements/temp/${Date.now()}-${filename}`;
+      s3Key = `bank-statements/temp/${Date.now()}-${filename}`;
       await s3Client.send(
         new PutObjectCommand({
           Bucket: process.env.S3_BUCKET_NAME || '',
@@ -201,17 +381,19 @@ export class BankStatementAnalyzer {
 
       console.log(`Textract job started: ${jobId}`);
 
-      // Poll for completion
+      // Poll for completion with increased timeout and pagination support
       let extractedText = '';
       let status = 'IN_PROGRESS';
       let attempts = 0;
-      const maxAttempts = 30; // 30 seconds max
+      const maxAttempts = 60; // 60 seconds max for large files
+      let nextToken: string | undefined;
 
       while (status === 'IN_PROGRESS' && attempts < maxAttempts) {
         await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
 
         const getCommand = new GetDocumentTextDetectionCommand({
           JobId: jobId,
+          NextToken: nextToken,
         });
         const getResponse = await textractClient.send(getCommand);
 
@@ -222,6 +404,12 @@ export class BankStatementAnalyzer {
             if (block.BlockType === 'LINE' && block.Text) {
               extractedText += block.Text + '\n';
             }
+          }
+
+          // Handle pagination
+          nextToken = getResponse.NextToken;
+          if (nextToken) {
+            status = 'IN_PROGRESS'; // Continue to get next page
           }
         }
 
@@ -236,7 +424,7 @@ export class BankStatementAnalyzer {
         `Textract completed. Extracted ${extractedText.length} characters`
       );
 
-      return extractedText.trim();
+      return { extractedText: extractedText.trim(), s3Key };
     } catch (error) {
       console.error('Error using AWS Textract for bank statement:', error);
       throw new Error(
@@ -245,7 +433,143 @@ export class BankStatementAnalyzer {
     }
   }
 
-  private parseTextForTransactions(text: string): BankTransaction[] {
+  // Clean up S3 files
+  private async cleanupS3Files(s3Keys: string[]): Promise<void> {
+    if (s3Keys.length === 0) return;
+
+    try {
+      const { S3Client, DeleteObjectsCommand } = await import(
+        '@aws-sdk/client-s3'
+      );
+
+      const s3Client = new S3Client({
+        region: process.env.AWS_REGION || 'us-east-1',
+        credentials: {
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+        },
+      });
+
+      await s3Client.send(
+        new DeleteObjectsCommand({
+          Bucket: process.env.S3_BUCKET_NAME || '',
+          Delete: {
+            Objects: s3Keys.map(key => ({ Key: key })),
+          },
+        })
+      );
+
+      console.log(`Cleaned up ${s3Keys.length} S3 files`);
+    } catch (error) {
+      console.error('Error cleaning up S3 files:', error);
+      // Don't throw - cleanup is best effort
+    }
+  }
+
+  // Use AI to parse extracted text into structured transactions
+  private async parseTextWithAI(
+    text: string,
+    currency: string = 'EUR',
+    bankName?: string
+  ): Promise<BankStatementData> {
+    const prompt = `You are a bank statement parser. Extract ALL transaction data from this bank statement text.
+
+BANK: ${bankName || 'Unknown'}
+EXPECTED CURRENCY: ${currency}
+
+STATEMENT TEXT:
+${text.substring(0, 8000)} ${text.length > 8000 ? '... (truncated)' : ''}
+
+Extract the following information:
+1. Account number (IBAN if available)
+2. Account holder name
+3. Statement period (start and end dates)
+4. Opening balance
+5. Closing balance
+6. ALL transactions with:
+   - Date (format as YYYY-MM-DD)
+   - Description (full text)
+   - Amount (positive for income, negative for expenses)
+   - Balance after transaction (if shown)
+   - Reference/IBAN of counterparty (if shown)
+
+Return ONLY valid JSON in this exact format:
+{
+  "accountNumber": "string or null",
+  "accountHolder": "string or null",
+  "iban": "string or null",
+  "bankName": "string or null",
+  "statementPeriod": {
+    "startDate": "YYYY-MM-DD",
+    "endDate": "YYYY-MM-DD"
+  },
+  "openingBalance": number,
+  "closingBalance": number,
+  "transactions": [
+    {
+      "date": "YYYY-MM-DD",
+      "description": "string",
+      "amount": number,
+      "balance": number or null,
+      "reference": "string or null"
+    }
+  ]
+}`;
+
+    try {
+      const response = await this.callOpenAIWithRetry(prompt);
+      const parsed = JSON.parse(response);
+
+      // Convert to our format
+      const transactions: BankTransaction[] = (parsed.transactions || []).map(
+        (
+          tx: {
+            date: string;
+            description: string;
+            amount: number;
+            balance?: number;
+            reference?: string;
+          },
+          index: number
+        ) => ({
+          id: `tx_${Date.now()}_${index}`,
+          date: tx.date,
+          description: tx.description,
+          rawDescription: tx.description,
+          amount: Math.abs(tx.amount),
+          currency: currency,
+          type: tx.amount >= 0 ? 'income' : 'expense',
+          balance: tx.balance,
+          reference: tx.reference,
+          counterparty: this.extractCounterparty(tx.description),
+          confidence: 0.9,
+        })
+      );
+
+      return {
+        accountNumber: parsed.accountNumber || undefined,
+        accountHolder: parsed.accountHolder || undefined,
+        bankName: parsed.bankName || bankName,
+        iban: parsed.iban || undefined,
+        statementPeriod: parsed.statementPeriod,
+        openingBalance: parsed.openingBalance || 0,
+        closingBalance: parsed.closingBalance || 0,
+        transactions,
+        currency,
+        confidence: 0.9,
+      };
+    } catch (err) {
+      console.error('Error parsing with AI, falling back to regex:', err);
+      // Fallback to basic regex parsing
+      return this.parseTextForTransactionsFallback(text, currency);
+    }
+  }
+
+  // Fallback regex-based parsing
+  private parseTextForTransactionsFallback(
+    text: string,
+    currency: string = 'EUR'
+  ): BankStatementData {
     const transactions: BankTransaction[] = [];
 
     // Common patterns for bank transactions
@@ -270,14 +594,16 @@ export class BankStatementAnalyzer {
               id: `tx_${Date.now()}_${transactions.length}`,
               date,
               description,
+              rawDescription: description,
               amount: Math.abs(amount),
-              currency: 'EUR',
+              currency: currency,
               type: amount >= 0 ? 'income' : 'expense',
               balance,
-              confidence: 0.85,
+              counterparty: this.extractCounterparty(description),
+              confidence: 0.7,
             });
           }
-        } catch (error) {
+        } catch {
           // Skip invalid matches
           continue;
         }
@@ -289,23 +615,258 @@ export class BankStatementAnalyzer {
       (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
     );
 
-    return transactions;
+    return {
+      statementPeriod: {
+        startDate:
+          transactions[0]?.date || new Date().toISOString().split('T')[0],
+        endDate:
+          transactions[transactions.length - 1]?.date ||
+          new Date().toISOString().split('T')[0],
+      },
+      openingBalance: transactions[0]?.balance || 0,
+      closingBalance: transactions[transactions.length - 1]?.balance || 0,
+      transactions,
+      currency: currency,
+      confidence: 0.7,
+      metadata: {
+        processingMethod: 'ai',
+      },
+    };
   }
 
   async analyzeBankStatement(
     statementData: BankStatementData,
-    existingTransactions: BankTransaction[] = []
+    companyId?: string
   ): Promise<AIAnalysisResult> {
     try {
+      // Get existing transactions from database for duplicate detection
+      const existingTransactions = companyId
+        ? await this.getExistingTransactions(
+            companyId,
+            statementData.statementPeriod
+          )
+        : [];
+
       const analysisPrompt = this.buildAnalysisPrompt(
         statementData,
         existingTransactions
       );
-      const response = await this.callOpenAI(analysisPrompt);
-      return this.parseAnalysisResponse(response);
+      const response = await this.callOpenAIWithRetry(analysisPrompt);
+      const analysis = this.parseAnalysisResponse(response);
+
+      // Add reconciliation if company ID provided
+      if (companyId) {
+        analysis.reconciliation = await this.reconcileTransactions(
+          statementData.transactions,
+          companyId
+        );
+      }
+
+      return analysis;
     } catch (error) {
       console.error('Error analyzing bank statement with AI:', error);
       return this.getFallbackAnalysis(statementData);
+    }
+  }
+
+  // Get existing transactions from database
+  private async getExistingTransactions(
+    companyId: string,
+    period: { startDate: string; endDate: string }
+  ): Promise<BankTransaction[]> {
+    try {
+      // Query database for existing transactions via bank accounts
+      const bankAccounts = await prisma.bankAccount.findMany({
+        where: { companyId },
+        select: { id: true },
+      });
+
+      const accountIds = bankAccounts.map(acc => acc.id);
+
+      const existingTxs = await prisma.transaction.findMany({
+        where: {
+          bankAccountId: { in: accountIds },
+          date: {
+            gte: new Date(period.startDate),
+            lte: new Date(period.endDate),
+          },
+        },
+        select: {
+          id: true,
+          date: true,
+          description: true,
+          amount: true,
+          currency: true,
+          type: true,
+          category: true,
+          subcategory: true,
+          counterparty: true,
+          reference: true,
+          confidence: true,
+        },
+        orderBy: { date: 'asc' },
+        take: 1000, // Limit for performance
+      });
+
+      return existingTxs.map(tx => ({
+        id: tx.id,
+        date: tx.date.toISOString().split('T')[0],
+        description: tx.description,
+        amount: Number(tx.amount),
+        currency: tx.currency,
+        type: tx.type === 'INCOME' ? 'income' : 'expense',
+        category: tx.category || undefined,
+        subcategory: tx.subcategory || undefined,
+        counterparty: tx.counterparty || undefined,
+        reference: tx.reference || undefined,
+        confidence: tx.confidence || 1.0,
+      }));
+    } catch (error) {
+      console.error('Error fetching existing transactions:', error);
+      return [];
+    }
+  }
+
+  // Reconcile transactions with invoices and expenses
+  private async reconcileTransactions(
+    transactions: BankTransaction[],
+    companyId: string
+  ): Promise<AIAnalysisResult['reconciliation']> {
+    try {
+      const reconciliation: AIAnalysisResult['reconciliation'] = [];
+
+      // Get unpaid invoices
+      const unpaidInvoices = await prisma.invoice.findMany({
+        where: {
+          companyId,
+          status: { in: ['APPROVED', 'PROCESSING'] },
+        },
+        select: {
+          id: true,
+          totalAmount: true,
+          dueDate: true,
+          vendor: true,
+        },
+      });
+
+      for (const tx of transactions) {
+        let matched = false;
+
+        // Try to match with invoices
+        for (const invoice of unpaidInvoices) {
+          // Exact amount match
+          if (Math.abs(tx.amount - Number(invoice.totalAmount)) < 0.01) {
+            // Check if dates are within reasonable range (±7 days)
+            const txDate = new Date(tx.date);
+            const dueDate = invoice.dueDate
+              ? new Date(invoice.dueDate)
+              : txDate;
+            const daysDiff = Math.abs(
+              (txDate.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24)
+            );
+
+            if (daysDiff <= 7) {
+              reconciliation.push({
+                transactionId: tx.id,
+                matchedInvoiceId: invoice.id,
+                matchType: 'exact',
+                confidence: 0.95,
+              });
+              matched = true;
+              break;
+            }
+          }
+        }
+
+        if (!matched) {
+          reconciliation.push({
+            transactionId: tx.id,
+            matchType: 'none',
+            confidence: 0,
+          });
+        }
+      }
+
+      return reconciliation;
+    } catch (error) {
+      console.error('Error reconciling transactions:', error);
+      return [];
+    }
+  }
+
+  // Save transactions to database
+  async saveTransactions(
+    statementData: BankStatementData,
+    companyId: string,
+    analysis: AIAnalysisResult
+  ): Promise<void> {
+    try {
+      // Get or create a default bank account for this company
+      let bankAccount = await prisma.bankAccount.findFirst({
+        where: { companyId },
+      });
+
+      if (!bankAccount) {
+        bankAccount = await prisma.bankAccount.create({
+          data: {
+            companyId,
+            name: statementData.bankName || 'Default Account',
+            iban: statementData.iban || 'UNKNOWN',
+            bankName: statementData.bankName || 'Unknown Bank',
+            balance: statementData.closingBalance,
+          },
+        });
+      }
+
+      // Create transactions in database
+      for (const tx of statementData.transactions) {
+        // Find suggested category from analysis
+        const suggestion = analysis.suggestedCategories.find(
+          s => s.transactionId === tx.id
+        );
+
+        // Check if it's a duplicate
+        const duplicate = analysis.duplicateDetection.find(
+          d => d.transactionId === tx.id && d.isDuplicate
+        );
+
+        if (duplicate?.isDuplicate) {
+          console.log(`Skipping duplicate transaction: ${tx.id}`);
+          continue;
+        }
+
+        await prisma.transaction.create({
+          data: {
+            id: tx.id,
+            bankAccountId: bankAccount.id,
+            date: new Date(tx.date),
+            description: tx.description,
+            amount: tx.amount,
+            currency: tx.currency,
+            type: tx.type === 'income' ? 'INCOME' : 'EXPENSE',
+            category: suggestion?.category,
+            subcategory: suggestion?.subcategory,
+            counterparty: tx.counterparty,
+            reference: tx.reference,
+            // balance: tx.balance,  // Uncomment after running migration
+            confidence: tx.confidence,
+            originalDescription: tx.rawDescription,
+            aiProcessed: true,
+            aiProcessedAt: new Date(),
+            // metadata: {  // Uncomment after running migration
+            //   rawDescription: tx.rawDescription,
+            //   aiReasoning: suggestion?.reasoning,
+            // },
+          },
+        });
+      }
+
+      console.log(
+        `Saved ${statementData.transactions.length} transactions to database`
+      );
+    } catch (error) {
+      console.error('Error saving transactions to database:', error);
+      throw error;
     }
   }
 
@@ -329,7 +890,8 @@ TRANSACTIONS TO ANALYZE:
 ${statementData.transactions
   .map(
     (tx, index) => `
-${index + 1}. Date: ${tx.date}
+${index + 1}. ID: ${tx.id}
+   Date: ${tx.date}
    Description: ${tx.description}
    Amount: ${tx.amount} ${tx.currency}
    Type: ${tx.type}
@@ -341,6 +903,7 @@ ${index + 1}. Date: ${tx.date}
 
 EXISTING TRANSACTIONS (for duplicate detection):
 ${existingTransactions
+  .slice(0, 50)
   .map(
     (tx, index) => `
 ${index + 1}. Date: ${tx.date}
@@ -350,6 +913,7 @@ ${index + 1}. Date: ${tx.date}
 `
   )
   .join('\n')}
+${existingTransactions.length > 50 ? `... and ${existingTransactions.length - 50} more` : ''}
 
 ANALYSIS REQUIREMENTS:
 
@@ -447,18 +1011,38 @@ Provide your analysis in valid JSON format only.
           },
         ],
         temperature: 0.1,
-        max_completion_tokens: 2000,
+        max_completion_tokens: 4000,
       }),
     });
 
     if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
       throw new Error(
-        `OpenAI API error: ${response.status} ${response.statusText}`
+        `OpenAI API error: ${response.status} ${response.statusText} - ${JSON.stringify(errorData)}`
       );
     }
 
     const data = await response.json();
     return data.choices[0].message.content;
+  }
+
+  // Call OpenAI with retry logic
+  private async callOpenAIWithRetry(
+    prompt: string,
+    retries: number = 0
+  ): Promise<string> {
+    try {
+      return await this.callOpenAI(prompt);
+    } catch (error) {
+      if (retries < this.maxRetries) {
+        console.log(
+          `OpenAI call failed, retrying (${retries + 1}/${this.maxRetries})...`
+        );
+        await new Promise(resolve => setTimeout(resolve, 1000 * (retries + 1))); // Exponential backoff
+        return this.callOpenAIWithRetry(prompt, retries + 1);
+      }
+      throw error;
+    }
   }
 
   private parseAnalysisResponse(response: string): AIAnalysisResult {
@@ -475,6 +1059,7 @@ Provide your analysis in valid JSON format only.
         duplicateDetection: parsed.duplicateDetection || [],
         anomalyDetection: parsed.anomalyDetection || [],
         counterpartyMapping: parsed.counterpartyMapping || [],
+        reconciliation: [],
         summary: parsed.summary || {
           totalIncome: 0,
           totalExpenses: 0,
@@ -499,6 +1084,7 @@ Provide your analysis in valid JSON format only.
       duplicateDetection: [],
       anomalyDetection: [],
       counterpartyMapping: [],
+      reconciliation: [],
       summary: {
         totalIncome: 0,
         totalExpenses: 0,
@@ -515,29 +1101,53 @@ Provide your analysis in valid JSON format only.
     const lines = csvContent.split('\n').filter(line => line.trim());
     const transactions: BankTransaction[] = [];
 
+    if (lines.length < 2) {
+      throw new Error(
+        'CSV file must contain at least a header row and one data row'
+      );
+    }
+
+    // Detect format from header
+    const header = lines[0].toLowerCase();
+    const detectedFormat = this.detectBankFormat(header);
+    const currency = this.detectCurrency(csvContent);
+
     // Skip header row
     for (let i = 1; i < lines.length; i++) {
       const columns = lines[i]
         .split(',')
-        .map(col => col.trim().replace(/"/g, ''));
+        .map(col => col.trim().replace(/^"|"$/g, ''));
 
-      if (columns.length >= 4) {
-        const [date, description, amount, balance] = columns;
-        const numericAmount = parseFloat(amount.replace(/[€$£,]/g, ''));
+      if (columns.length >= 3) {
+        try {
+          const date = this.parseDate(columns[0]);
+          const description = columns[1] || '';
+          const amount = this.parseAmount(columns[2]);
+          const balance = columns[3] ? this.parseAmount(columns[3]) : undefined;
 
-        transactions.push({
-          id: `tx_${Date.now()}_${i}`,
-          date: this.parseDate(date),
-          description: description,
-          amount: Math.abs(numericAmount),
-          currency: 'EUR',
-          type: numericAmount >= 0 ? 'income' : 'expense',
-          balance: balance
-            ? parseFloat(balance.replace(/[€$£,]/g, ''))
-            : undefined,
-          confidence: 0.9,
-        });
+          if (!isNaN(amount) && amount !== 0) {
+            transactions.push({
+              id: `tx_${Date.now()}_${i}`,
+              date,
+              description,
+              rawDescription: description,
+              amount: Math.abs(amount),
+              currency,
+              type: amount >= 0 ? 'income' : 'expense',
+              balance,
+              counterparty: this.extractCounterparty(description),
+              confidence: 0.9,
+            });
+          }
+        } catch (error) {
+          console.warn(`Skipping invalid CSV row ${i}:`, error);
+          continue;
+        }
       }
+    }
+
+    if (transactions.length === 0) {
+      throw new Error('No valid transactions found in CSV file');
     }
 
     return {
@@ -551,8 +1161,12 @@ Provide your analysis in valid JSON format only.
       openingBalance: transactions[0]?.balance || 0,
       closingBalance: transactions[transactions.length - 1]?.balance || 0,
       transactions,
-      currency: 'EUR',
+      currency,
       confidence: 0.9,
+      metadata: {
+        detectedFormat: detectedFormat?.name,
+        processingMethod: 'csv',
+      },
     };
   }
 
@@ -573,34 +1187,59 @@ Provide your analysis in valid JSON format only.
       }
 
       const headers = jsonData[0] as string[];
-      const dataRows = jsonData.slice(1) as any[][];
+      const dataRows = jsonData.slice(1) as (
+        | string
+        | number
+        | null
+        | undefined
+      )[][];
+
+      // Detect bank format
+      const headerText = headers.join(' ');
+      const detectedFormat = this.detectBankFormat(headerText);
+      const currency = this.detectCurrency(headerText);
 
       // Find column indices for required fields
-      const dateIndex = this.findColumnIndex(headers, [
-        'date',
-        'datum',
-        'transaction date',
-        'valuta',
-      ]);
-      const descriptionIndex = this.findColumnIndex(headers, [
-        'description',
-        'beschreibung',
-        'text',
-        'reference',
-        'verwendungszweck',
-      ]);
-      const amountIndex = this.findColumnIndex(headers, [
-        'amount',
-        'betrag',
-        'value',
-        'summe',
-      ]);
-      const balanceIndex = this.findColumnIndex(headers, [
-        'balance',
-        'saldo',
-        'account balance',
-        'kontostand',
-      ]);
+      const dateIndex = this.findColumnIndex(
+        headers,
+        detectedFormat?.columnHints.date || [
+          'date',
+          'datum',
+          'buchungstag',
+          'transaction date',
+          'valuta',
+        ]
+      );
+      const descriptionIndex = this.findColumnIndex(
+        headers,
+        detectedFormat?.columnHints.description || [
+          'description',
+          'beschreibung',
+          'text',
+          'reference',
+          'verwendungszweck',
+          'buchungstext',
+        ]
+      );
+      const amountIndex = this.findColumnIndex(
+        headers,
+        detectedFormat?.columnHints.amount || [
+          'amount',
+          'betrag',
+          'value',
+          'summe',
+          'umsatz',
+        ]
+      );
+      const balanceIndex = this.findColumnIndex(
+        headers,
+        detectedFormat?.columnHints.balance || [
+          'balance',
+          'saldo',
+          'account balance',
+          'kontostand',
+        ]
+      );
 
       if (dateIndex === -1 || descriptionIndex === -1 || amountIndex === -1) {
         throw new Error(
@@ -617,33 +1256,40 @@ Provide your analysis in valid JSON format only.
           row.length === 0 ||
           !row[dateIndex] ||
           !row[descriptionIndex] ||
-          !row[amountIndex]
+          row[amountIndex] === undefined
         ) {
           continue; // Skip empty rows
         }
 
-        const date = this.parseDate(String(row[dateIndex]));
-        const description = String(row[descriptionIndex]).trim();
-        const amount = this.parseAmount(String(row[amountIndex]));
-        const balance =
-          balanceIndex !== -1 && row[balanceIndex]
-            ? this.parseAmount(String(row[balanceIndex]))
-            : undefined;
+        try {
+          const date = this.parseDate(String(row[dateIndex]));
+          const description = String(row[descriptionIndex]).trim();
+          const amount = this.parseAmount(String(row[amountIndex]));
+          const balance =
+            balanceIndex !== -1 && row[balanceIndex] !== undefined
+              ? this.parseAmount(String(row[balanceIndex]))
+              : undefined;
 
-        if (isNaN(amount) || amount === 0) {
-          continue; // Skip invalid amounts
+          if (isNaN(amount) || amount === 0) {
+            continue; // Skip invalid amounts
+          }
+
+          transactions.push({
+            id: `tx_${Date.now()}_${i}`,
+            date,
+            description,
+            rawDescription: description,
+            amount: Math.abs(amount),
+            currency,
+            type: amount >= 0 ? 'income' : 'expense',
+            balance,
+            counterparty: this.extractCounterparty(description),
+            confidence: 0.9,
+          });
+        } catch (error) {
+          console.warn(`Skipping invalid Excel row ${i + 2}:`, error);
+          continue;
         }
-
-        transactions.push({
-          id: `tx_${Date.now()}_${i}`,
-          date,
-          description,
-          amount: Math.abs(amount),
-          currency: 'EUR',
-          type: amount >= 0 ? 'income' : 'expense',
-          balance,
-          confidence: 0.9,
-        });
       }
 
       if (transactions.length === 0) {
@@ -661,8 +1307,12 @@ Provide your analysis in valid JSON format only.
         openingBalance: transactions[0]?.balance || 0,
         closingBalance: transactions[transactions.length - 1]?.balance || 0,
         transactions,
-        currency: 'EUR',
+        currency,
         confidence: 0.9,
+        metadata: {
+          detectedFormat: detectedFormat?.name,
+          processingMethod: 'excel',
+        },
       };
     } catch (error) {
       console.error('Error parsing Excel file:', error);
@@ -675,7 +1325,9 @@ Provide your analysis in valid JSON format only.
   // Helper method to find column index by name variations
   private findColumnIndex(headers: string[], variations: string[]): number {
     for (let i = 0; i < headers.length; i++) {
-      const header = headers[i].toLowerCase().trim();
+      const header = String(headers[i] || '')
+        .toLowerCase()
+        .trim();
       for (const variation of variations) {
         if (header.includes(variation.toLowerCase())) {
           return i;
@@ -686,16 +1338,55 @@ Provide your analysis in valid JSON format only.
   }
 
   private parseDate(dateString: string): string {
+    // Handle Excel serial dates
+    if (!isNaN(Number(dateString)) && Number(dateString) > 40000) {
+      const excelEpoch = new Date(1899, 11, 30);
+      const date = new Date(
+        excelEpoch.getTime() + Number(dateString) * 24 * 60 * 60 * 1000
+      );
+      return date.toISOString().split('T')[0];
+    }
+
+    // Try parsing as regular date
     const date = new Date(dateString);
     if (!isNaN(date.getTime())) {
       return date.toISOString().split('T')[0];
     }
+
+    // Try German date format DD.MM.YYYY
+    const germanMatch = dateString.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+    if (germanMatch) {
+      const [, day, month, year] = germanMatch;
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+
     return dateString;
   }
 
   private parseAmount(amountString: string): number {
-    // Remove currency symbols and commas, convert to number
-    const cleaned = amountString.replace(/[€$£,]/g, '').trim();
+    if (typeof amountString === 'number') {
+      return amountString;
+    }
+
+    // Remove currency symbols and whitespace
+    let cleaned = String(amountString)
+      .replace(/[€$£\s]/g, '')
+      .trim();
+
+    // Handle German number format (comma as decimal separator)
+    if (cleaned.includes(',') && !cleaned.includes('.')) {
+      cleaned = cleaned.replace(',', '.');
+    } else if (cleaned.includes('.') && cleaned.includes(',')) {
+      // Both present - remove thousand separator
+      if (cleaned.indexOf('.') < cleaned.indexOf(',')) {
+        // European format: 1.234,56
+        cleaned = cleaned.replace(/\./g, '').replace(',', '.');
+      } else {
+        // US format: 1,234.56
+        cleaned = cleaned.replace(/,/g, '');
+      }
+    }
+
     const parsed = parseFloat(cleaned);
     return isNaN(parsed) ? 0 : parsed;
   }

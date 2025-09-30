@@ -23,14 +23,23 @@ interface ExtractedInvoiceData {
 }
 
 export class InvoiceDataExtractor {
-  private apiKey: string;
+  private apiKey: string | null = null;
   private baseUrl: string = 'https://api.openai.com/v1';
 
   constructor() {
+    // Lazy initialization - only check at runtime, not at module load
+    this.apiKey = null;
+  }
+
+  private getApiKey(): string {
+    if (this.apiKey) {
+      return this.apiKey;
+    }
     if (!process.env.OPENAI_API_KEY) {
       throw new Error('OPENAI_API_KEY environment variable is required');
     }
     this.apiKey = process.env.OPENAI_API_KEY;
+    return this.apiKey;
   }
 
   async extractInvoiceData(file: File): Promise<ExtractedInvoiceData> {
@@ -590,7 +599,7 @@ RESPONSE FORMAT (JSON only):
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${this.getApiKey()}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -637,7 +646,7 @@ RESPONSE FORMAT (JSON only):
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${this.getApiKey()}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({

@@ -71,14 +71,23 @@ export interface AIAnalysisResult {
 }
 
 export class BankStatementAnalyzer {
-  private apiKey: string;
+  private apiKey: string | null = null;
   private baseUrl: string = 'https://api.openai.com/v1';
 
   constructor() {
+    // Lazy initialization - only check at runtime, not at module load
+    this.apiKey = null;
+  }
+
+  private getApiKey(): string {
+    if (this.apiKey) {
+      return this.apiKey;
+    }
     if (!process.env.OPENAI_API_KEY) {
       throw new Error('OPENAI_API_KEY environment variable is required');
     }
     this.apiKey = process.env.OPENAI_API_KEY;
+    return this.apiKey;
   }
 
   // Parse PDF bank statement using AWS Textract
@@ -421,7 +430,7 @@ Provide your analysis in valid JSON format only.
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${this.getApiKey()}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({

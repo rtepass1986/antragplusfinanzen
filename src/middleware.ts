@@ -3,7 +3,15 @@ import { NextResponse } from 'next/server';
 
 export default withAuth(
   function middleware(req) {
-    // You can add custom middleware logic here
+    const token = req.nextauth.token;
+    const path = req.nextUrl.pathname;
+
+    // If user is authenticated and trying to access auth pages, redirect to dashboard
+    if (token && path.startsWith('/auth/signin')) {
+      return NextResponse.redirect(new URL('/', req.url));
+    }
+
+    // You can add more custom middleware logic here
     return NextResponse.next();
   },
   {
@@ -17,6 +25,8 @@ export default withAuth(
           '/auth/signup',
           '/auth/verify-email',
           '/auth/reset-password',
+          '/auth/forgot-password',
+          '/auth/accept-invitation',
           '/terms',
           '/privacy',
         ];
@@ -29,6 +39,9 @@ export default withAuth(
         // All other paths require authentication
         return !!token;
       },
+    },
+    pages: {
+      signIn: '/auth/signin', // Redirect to this page when unauthorized
     },
   }
 );

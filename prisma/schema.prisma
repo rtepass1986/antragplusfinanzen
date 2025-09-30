@@ -19,7 +19,7 @@ model User {
   email          String    @unique
   name           String?
   hashedPassword String?
-  role           UserRole  @default(USER)
+  role           SystemRole  @default(USER)
   emailVerified  DateTime?
   image          String?
   phone          String?
@@ -767,7 +767,7 @@ model Notification {
 // ENUMS
 // ================================
 
-enum UserRole {
+enum SystemRole {
   SUPER_ADMIN
   ADMIN
   USER

@@ -1,7 +1,5 @@
 import { Resend } from 'resend';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-
 export interface EmailOptions {
   to: string;
   subject: string;
@@ -12,9 +10,20 @@ export interface EmailOptions {
 export class EmailService {
   private static instance: EmailService;
   private fromEmail: string;
+  private resend: Resend | null = null;
 
   private constructor() {
     this.fromEmail = process.env.EMAIL_FROM || 'noreply@yourdomain.com';
+  }
+
+  private getResendClient(): Resend {
+    if (!this.resend) {
+      if (!process.env.RESEND_API_KEY) {
+        throw new Error('RESEND_API_KEY environment variable is required');
+      }
+      this.resend = new Resend(process.env.RESEND_API_KEY);
+    }
+    return this.resend;
   }
 
   static getInstance(): EmailService {
@@ -73,6 +82,7 @@ export class EmailService {
     `;
 
     try {
+      const resend = this.getResendClient();
       await resend.emails.send({
         from: this.fromEmail,
         to: email,
@@ -142,6 +152,7 @@ export class EmailService {
     `;
 
     try {
+      const resend = this.getResendClient();
       await resend.emails.send({
         from: this.fromEmail,
         to: email,
@@ -203,6 +214,7 @@ export class EmailService {
     `;
 
     try {
+      const resend = this.getResendClient();
       await resend.emails.send({
         from: this.fromEmail,
         to: email,
